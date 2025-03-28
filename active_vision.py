@@ -19,7 +19,7 @@ from geometry_msgs.msg import TransformStamped
 
 from config.config import *
 from tsdf_torch import TSDFVolume
-from ik_solver import InverseKinematicsSolver
+from moveit2 import MoveIt2Viper
 import shutil
 from rclpy.executors import MultiThreadedExecutor
 
@@ -64,7 +64,7 @@ class Perception(Node):
         self.bridge = CvBridge()
         self.output_dir = output_dir
         self.view_sampler = ViewSampler()
-        self.ik_solver = InverseKinematicsSolver()
+        self.ik_solver = MoveIt2Viper()
 
         self.intrinsic_o3d = o3d.camera.PinholeCameraIntrinsic(WIDTH, HEIGHT, 
                                                               D405_INTRINSIC[0, 0], D405_INTRINSIC[1, 1], 
