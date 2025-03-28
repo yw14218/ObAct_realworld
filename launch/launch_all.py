@@ -39,13 +39,12 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            'rgb_camera.color.profile': '848x480x30',
-            'depth_module.profile': '848x480x30',
+            'depth_module.color_profile': '640x480x30',
+            'depth_module.depth_profile': '640x480x30',
             'align_depth.enable': 'true',
             # 'pointcloud.enable': 'true',
             'spatial_filter.enable': 'true',
             'temporal_filter.enable': 'true',
-            'hole_filling_filter.enable': 'true',
             'device_type': 'd405'
         }.items()
     )
@@ -55,7 +54,7 @@ def generate_launch_description():
             os.path.join(
                 get_package_share_directory('interbotix_xsarm_moveit'),
                 'launch',
-                'hand_eye.launch.py'
+                'handeye_left.launch.py'
             )
         )
     )
@@ -67,7 +66,7 @@ def generate_launch_description():
         #     description='Model type of the Interbotix robot'
         # ),
         # interbotix_xsarm_control_launch,
-        TimerAction(period=5.0, actions=[interbotix_xsarm_moveit_launch]),
+        TimerAction(period=3.0, actions=[interbotix_xsarm_moveit_launch]),
         TimerAction(period=6.0, actions=[realsense_camera_launch]),
         TimerAction(period=9.0, actions=[hand_eye_launch])
     ])

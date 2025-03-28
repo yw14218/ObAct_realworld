@@ -17,10 +17,10 @@ from geometry_msgs.msg import TransformStamped
 
 from config.config import (
     WIDTH, HEIGHT, D405_INTRINSIC, D405_HANDEYE, NUMBER_OF_VIEW_SAMPLES,
-    D405_RGB_TOPIC_NAME, D405_DEPTH_TOPIC_NAME
+    D405_RGB_TOPIC_NAME, D405_DEPTH_TOPIC_NAME, base_link_name, end_effector_name
 )
 from tsdf_torch import ViewSampler
-
+from utils import ik_solver
 
 class Perception(Node):
     def __init__(
@@ -28,8 +28,8 @@ class Perception(Node):
         output_dir: str,
         text_prompt: str,
         radius: float = 0.3,
-        base_frame: str = "vx300s/base_link",
-        camera_frame: str = "camera_color_optical_frame",
+        base_frame: str = base_link_name(),
+        end_effector_frame: str = end_effector_name(),
         ik_solver=None
     ):
         """Initialize the Perception node with configurable parameters."""
@@ -41,7 +41,7 @@ class Perception(Node):
         self.rgb_topic = D405_RGB_TOPIC_NAME
         self.depth_topic = D405_DEPTH_TOPIC_NAME
         self.base_frame = base_frame
-        self.camera_frame = camera_frame
+        self.end_effector_frame = end_effector_frame
         self.num_viewpoints = NUMBER_OF_VIEW_SAMPLES
         self.ik_solver = ik_solver
         self.view_sampler = ViewSampler()
@@ -87,7 +87,7 @@ class Perception(Node):
         """Capture RGB, depth, and transform data synchronously."""
         transform_timeout = rclpy.duration.Duration(seconds=timeout)
         start_time = self.get_clock().now()
-        while not self.tf_buffer.can_transform(self.base_frame, self.camera_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)):
+        while not self.tf_buffer.can_transform(self.base_frame, self.end_effector_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)):
             if not rclpy.ok() or (self.get_clock().now() - start_time) > transform_timeout:
                 self.get_logger().warn("Timeout waiting for TF transform")
                 return None, None, None
@@ -103,8 +103,8 @@ class Perception(Node):
         depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "16UC1")
 
         try:
-            transform = self.tf_buffer.lookup_transform(self.base_frame, self.camera_frame, rclpy.time.Time(), transform_timeout)
-            return rgb_image, depth_image, self.transform_to_matrix(transform)
+            transform = self.tf_buffer.lookup_transform(self.base_frame, self.end_effector_frame, rclpy.time.Time(), transform_timeout)
+            return rgb_image, depth_image, self.transform_to_matrix(transform) @ D405_HANDEYE
         except tf2_ros.LookupException as e:
             self.get_logger().error(f"TF lookup failed: {e}")
             return None, None, None
@@ -179,9 +179,8 @@ class Perception(Node):
             T = np.eye(4)
             T[:3, :3], T[:3, 3] = vp['rotation'], vp['position']
             T_eef_robot = T @ np.linalg.inv(D405_HANDEYE)
-            position, quat_xyzw = T_eef_robot[:3, 3], Rotation.from_matrix(T_eef_robot[:3, :3]).as_quat()
-            if self.ik_solver.compute_ik(position, quat_xyzw) is not None:
-                filtered.append({'position': position, 'rotation': T_eef_robot[:3, :3]})
+            if self.ik_solver.ik(T_eef_robot) is not None:
+                filtered.append({'position': vp['position'], 'rotation': vp['rotation']})
         self.get_logger().info(f"Filtered to {len(filtered)} IK-feasible viewpoints")
         return filtered
 
@@ -213,7 +212,7 @@ class Perception(Node):
         # Pass bbox to view_sampler and generate viewpoints
         self.view_sampler.bbox = np.concatenate([bbox.min(axis=0), bbox.max(axis=0)])
         viewpoints = self.view_sampler.generate_hemisphere_points_with_orientations(self.radius, self.num_viewpoints)
-        return self._filter_viewpoints(viewpoints), bbox
+        return self._filter_viewpoints(viewpoints), self.view_sampler.bbox
 
     def destroy_node(self) -> None:
         """Clean up resources."""
@@ -227,9 +226,7 @@ def main(args=None) -> None:
         shutil.rmtree(tmp_dir)
     os.makedirs(tmp_dir, exist_ok=True)
 
-    # Example usage with optional IK solver
-    from ik_solver import InverseKinematicsSolver  # Assuming this exists
-    perception = Perception(output_dir=tmp_dir, text_prompt="green mug", ik_solver=InverseKinematicsSolver())
+    perception = Perception(output_dir=tmp_dir, text_prompt="green mug", ik_solver=ik_solver)
 
     try:
         viewpoints, bbox = perception.process()

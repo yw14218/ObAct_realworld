@@ -5,17 +5,18 @@ import glob
 import cv2
 import time
 import torch
+from config.config import HEIGHT, WIDTH, D405_INTRINSIC
 
 # Constants
 DEFAULT_DATA_FOLDER = "tmp"
-DEFAULT_INTRINSIC_FILE = "config/d405_intrinsic.npy"
+DEFAULT_INTRINSIC_FILE = "config/d405_intrinsic_right.npy"
 TSDF_SIZE = 0.45
-TSDF_RESOLUTION = 64
+TSDF_RESOLUTION = 128
 NUM_SAMPLED_VIEWS = 64
 VOXEL_DOWN_SIZE = 0.005
 CAMERA_SCALE = 0.03
 TOP_N = 1
-RAY_BATCH_SIZE = int(480 * 848 * 0.1)
+RAY_BATCH_SIZE = int(WIDTH * HEIGHT * 0.2)
 
 # Check for CUDA availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -130,6 +131,7 @@ class TSDFVolume:
         )
 
         pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic_o3d, extrinsic)
+        
         if not pcd.has_points():
             print(f"Frame {frame_idx}: No points generated from RGBD image")
         else:
@@ -170,7 +172,7 @@ class ViewEvaluator:
         print(f"Initialized ViewEvaluator with TSDF grid shape: {self.sdf_grid.shape}")
         print(f"Target Bounding Box: {self.target_bbox}")
 
-    def compute_information_gain(self, pose, width=848, height=480):
+    def compute_information_gain(self, pose, width=WIDTH, height=HEIGHT):
         position = torch.tensor(pose[:3, 3], dtype=torch.float32, device=device)
         rotation = torch.tensor(pose[:3, :3], dtype=torch.float32, device=device)
 
@@ -240,9 +242,9 @@ class ViewEvaluator:
 
 def load_data(folder_path):
     """Load RGB images, depth maps, and poses from folder."""
-    rgb_files = sorted(glob.glob(os.path.join(folder_path, "rgb_0*.png")))
-    depth_files = sorted(glob.glob(os.path.join(folder_path, "depth_0*.npy")))
-    pose_files = sorted(glob.glob(os.path.join(folder_path, "pose_0*.npy")))
+    rgb_files = sorted(glob.glob(os.path.join(folder_path, "rgb_*.png")))
+    depth_files = sorted(glob.glob(os.path.join(folder_path, "depth_*.npy")))
+    pose_files = sorted(glob.glob(os.path.join(folder_path, "pose_*.npy")))
     
     return [cv2.imread(f) for f in rgb_files], [np.load(f) for f in depth_files], [np.load(f) for f in pose_files]
 
@@ -250,8 +252,8 @@ def load_intrinsics(file_path):
     """Load camera intrinsics from file."""
     K = np.load(file_path)
     return {
-        'width': 848,
-        'height': 480,
+        'width': WIDTH,
+        'height': HEIGHT,
         'fx': K[0, 0],
         'fy': K[1, 1],
         'cx': K[0, 2],

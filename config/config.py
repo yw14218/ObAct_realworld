@@ -4,10 +4,10 @@ from typing import List
 D405_RGB_TOPIC_NAME = "camera/camera/color/image_rect_raw"
 D405_DEPTH_TOPIC_NAME = "camera/camera/aligned_depth_to_color/image_raw"
 
-D405_HANDEYE = np.load("config/d405_handeye.npy")
-D405_INTRINSIC = np.load("config/d405_intrinsic.npy")
+D405_HANDEYE = np.load("config/d405_handeye_left.npy")
+D405_INTRINSIC = np.load("config/d405_intrinsic_right.npy")
 
-WIDTH, HEIGHT = 848, 480
+WIDTH, HEIGHT = 640, 480
 TSDF_SIZE = 0.5
 TSDF_DIM = 256
 
