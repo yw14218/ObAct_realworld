@@ -15,6 +15,12 @@ import tf2_ros
 import geometry_msgs.msg
 
 
+
+from lightglue import LightGlue, SuperPoint
+from lightglue.utils import load_image, rbd
+from lightglue import viz2d
+import torch
+
 class VisualServoing(LightGlueVisualServoer, Node):
     def __init__(self, DIR, bot):
         # Initialize ROS 2 node
@@ -47,6 +53,13 @@ class VisualServoing(LightGlueVisualServoer, Node):
         self.is_complete = False
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
+
+
+        # FIXME: This is a hack to get the LightGlue matcher to work with the SuperPoint extractor
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
+        self.extractor = SuperPoint(max_num_keypoints=2048).eval().to(self.device)
+        self.matcher = LightGlue(features="superpoint", depth_confidence=-1, width_confidence=-1, filter_threshold=0.1).eval().to(self.device)
+        self.ref_image = load_image(f"{DIR}/ref_rgb_masked.png")
     
     def compute_goal_state(self, T_delta_cam):
         T_current_eef_world = self.bot.arm.get_ee_pose()
@@ -75,12 +88,63 @@ class VisualServoing(LightGlueVisualServoer, Node):
         if mkpts_scores_0 is None or len(mkpts_scores_0) <= 3:
             self.get_logger().info("Not enough keypoints found, skipping this iteration")
             return
+        
+
+
+
+        # FIXME: This is a hack to get the LightGlue matcher to work with the SuperPoint extractor
+        live_rgb, live_depth = self.observe()
+        if live_rgb is None:
+            self.log_error("No RGB image received. Check camera and topics.")
+            return None, None, None
+        
+        live_rgb = torch.tensor(live_rgb).permute(2, 0, 1).unsqueeze(0)
+
+        feats0 = self.extractor.extract(self.test_image.to(self.device))
+        # print(feats0['keypoints'])
+        feats1 = self.extractor.extract(self.ref_image.to(self.device))
+        matches01 = self.matcher({"image0": feats0, "image1": feats1})
+        # print(matches01.keys())
+        feats0, feats1, matches01 = [
+            rbd(x) for x in [feats0, feats1, matches01]
+        ]  # remove batch dimension
+
+        kpts0, kpts1, matches = feats0["keypoints"], feats1["keypoints"], matches01["matches"]
+        m_kpts0, m_kpts1 = kpts0[matches[..., 0]], kpts1[matches[..., 1]]
+
+        matches = matches.cpu()
+
+        all_indices = torch.arange(kpts0.shape[0])
+        unmatched = ~torch.isin(all_indices, matches[..., 1])
+        unmatched_kpts = kpts0[unmatched]
+
+        matched_center = m_kpts0.mean(dim=0)
+        unmatched_center = unmatched_kpts.mean(dim=0)
+        diff_vector = matched_center - unmatched_center
+        x, y = np.linalg.norm(diff_vector) * 0.1
+        T_diff = np.eye(4)
+        T_diff[:3, 3] = np.array([x, y, 0]) 
+
+
+
+
+
+
+
+
 
         # Compute transformation
         T_delta_cam = solve_transform_3d(mkpts_scores_0[:, :2], mkpts_scores_1[:, :2], self.depth_ref, depth_cur, K)
 
         # Update error
         T_delta_cam_inv = np.eye(4) @ pose_inv(T_delta_cam)
+
+
+        # FIXME: Diff
+        self.get_logger().info(f"T_diff: {x:.2f}, {y:.2f}")
+        T_delta_cam_inv = np.eye(4) @ pose_inv(T_delta_cam @ T_diff)
+
+
         translation_error = np.linalg.norm(T_delta_cam_inv[:3, 3])
         rotation_error = np.rad2deg(np.arccos((np.trace(T_delta_cam_inv[:3, :3]) - 1) / 2))
         self.get_logger().info(f"Translation Error: {translation_error:.6f}, Rotation Error: {rotation_error:.2f} degrees")
