@@ -14,24 +14,27 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from std_msgs.msg import Header
 from interbotix_common_modules.common_robot.robot import robot_shutdown, robot_startup
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
+from std_msgs.msg import Bool
+import subprocess
 
-class AVController(Node):
+class Explorer(Node):
     def __init__(self) -> None:
         super().__init__('av_controller')
         self.cli = self.create_client(Trigger, 'compute_information_gain')
         while not self.cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_information_gain service...')
         self.get_logger().info('Connected to /compute_information_gain service')
+        self.error_sub = self.create_subscription(Bool, 'error_exceeds_threshold', self.error_callback, 10)  # Corrected argument order
+        self.is_running = True
 
-        self.servoer = LightGlueVisualServoer(
-            rgb_ref=np.array(Image.open(f"tasks/mug/ref_rgb.png")),
-            seg_ref=np.array(Image.open(f"tasks/mug/ref_mask.png")).astype(bool),
-            use_depth=True,
-            features='superpoint',
-            silent=True
-        )
-
-        self.ref_depth = np.array(Image.open(f"tasks/mug/ref_depth.png"))
+    def error_callback(self, msg: Bool) -> None:
+            """
+            Callback function for the 'error_exceeds_threshold' topic.
+            """
+            if msg.data:
+                pass
+            else:
+                self.is_running = True
 
     def call_service(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
@@ -69,7 +72,10 @@ class AVController(Node):
             position = np.array([float(x) for x in pos_str.split()], dtype=np.float64)
             quaternion = np.array([float(x) for x in quat_str.split()], dtype=np.float64)
 
-            return position, quaternion
+            print(f"Received viewpoint - Position: {position}, Quaternion: {quaternion}")
+            camera_goal = compose_homogeneous_matrix(position, quaternion)
+            eef_goal = camera_goal @ np.linalg.inv(D405_HANDEYE)
+            return eef_goal
 
         except Exception as e:
             # Log error in a Node could be better but here we use print for static method
@@ -78,12 +84,12 @@ class AVController(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    controller = AVController()
+    controller = Explorer()
     moveit_viper = MoveIt2Viper()
 
     bot = InterbotixManipulatorXS(
         robot_model='vx300s',
-        group_name='arm',
+        group_name='arm_2',
         gripper_name='gripper',
         moving_time=1.2,
         accel_time=0.3
@@ -92,26 +98,17 @@ def main(args=None) -> None:
     robot_startup()
 
     try:
-        for i in range(2):
-            position, quaternion = controller.call_service()
-            if position is not None and quaternion is not None:
-                print(f"Received viewpoint - Position: {position}, Quaternion: {quaternion}")
-                camera_goal = compose_homogeneous_matrix(position, quaternion)
-                eef_goal = camera_goal @ np.linalg.inv(D405_HANDEYE)
-                # current_pose = bot.get_current_pose()
-                # interpolated_poses = interpolate_cartesian(current_pose, eef_goal, 2)
-                # for pose in interpolated_poses:
-                #     bot.move_to_pose(pose[:3, 3], rot_mat_to_quat(pose[:3, :3]))
-
-                plan = moveit_viper.move_to_pose(eef_goal[:3, 3], rot_mat_to_quat(eef_goal[:3, :3]))
-
+        while controller.is_running:
+            eef_goal = controller.call_service()
+            plan = moveit_viper.move_to_pose(eef_goal[:3, 3], rot_mat_to_quat(eef_goal[:3, :3]))
             for point in plan.points:
+                if not controller.is_running:
+                    break
                 msg = JointTrajectory()
                 msg.header = Header()
                 msg.joint_names = plan.joint_names
                 # moveit_viper.moveit2.move_to_configuration(joint_positions=point.positions[:6], joint_names=plan.joint_names[:6])
                 bot.arm.set_joint_positions(point.positions[:6], moving_time=1.2, accel_time=0.3, blocking=True)
-
             else:
                 print("No valid viewpoint received.")
 
@@ -119,6 +116,10 @@ def main(args=None) -> None:
         controller.get_logger().info('Shutting down...')
 
     finally:
+        # Cleanup ROS resources
         rclpy.spin_once(controller)
+        robot_shutdown()
+        rclpy.shutdown()
+
 if __name__ == '__main__':
     main()

@@ -16,7 +16,7 @@ import tf2_ros
 from geometry_msgs.msg import TransformStamped
 
 from config.config import (
-    WIDTH, HEIGHT, D405_INTRINSIC, D405_HANDEYE, NUMBER_OF_VIEW_SAMPLES,
+    WIDTH, HEIGHT, D405_INTRINSIC, D405_HANDEYE_LEFT, NUMBER_OF_VIEW_SAMPLES,
     D405_RGB_TOPIC_NAME, D405_DEPTH_TOPIC_NAME, base_link_name, end_effector_name
 )
 from tsdf_torch import ViewSampler
@@ -104,7 +104,7 @@ class Perception(Node):
 
         try:
             transform = self.tf_buffer.lookup_transform(self.base_frame, self.end_effector_frame, rclpy.time.Time(), transform_timeout)
-            return rgb_image, depth_image, self.transform_to_matrix(transform) @ D405_HANDEYE
+            return rgb_image, depth_image, self.transform_to_matrix(transform) @ D405_HANDEYE_LEFT
         except tf2_ros.LookupException as e:
             self.get_logger().error(f"TF lookup failed: {e}")
             return None, None, None
@@ -178,7 +178,7 @@ class Perception(Node):
         for vp in viewpoints:
             T = np.eye(4)
             T[:3, :3], T[:3, 3] = vp['rotation'], vp['position']
-            T_eef_robot = T @ np.linalg.inv(D405_HANDEYE)
+            T_eef_robot = T @ np.linalg.inv(D405_HANDEYE_LEFT)
             if self.ik_solver.ik(T_eef_robot) is not None:
                 filtered.append({'position': vp['position'], 'rotation': vp['rotation']})
         self.get_logger().info(f"Filtered to {len(filtered)} IK-feasible viewpoints")

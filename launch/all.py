@@ -26,7 +26,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             'robot_model': 'vx300s',
-            'hardware_type': 'actual'
+            'hardware_type': 'actual',
+            'robot_name': 'arm_2', # Change this to 'arm_1' for the first arm
         }.items()
     )
 
@@ -49,7 +50,17 @@ def generate_launch_description():
         }.items()
     )
 
-    hand_eye_launch = IncludeLaunchDescription(
+    hand_eye_launch_left = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('interbotix_xsarm_moveit'),
+                'launch',
+                'handeye_left.launch.py'
+            )
+        )
+    )
+
+    hand_eye_launch_right = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
                 get_package_share_directory('interbotix_xsarm_moveit'),
@@ -60,13 +71,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # DeclareLaunchArgument(
-        #     'robot_model',
-        #     default_value='vx300s',
-        #     description='Model type of the Interbotix robot'
-        # ),
-        # interbotix_xsarm_control_launch,
-        TimerAction(period=3.0, actions=[interbotix_xsarm_moveit_launch]),
-        TimerAction(period=6.0, actions=[realsense_camera_launch]),
-        TimerAction(period=9.0, actions=[hand_eye_launch])
+        interbotix_xsarm_moveit_launch,
+        TimerAction(period=2.5, actions=[realsense_camera_launch]),
+        TimerAction(period=5.0, actions=[hand_eye_launch_left]),
+        TimerAction(period=5.0, actions=[hand_eye_launch_right])
     ])
+
+# ros2 launch interbotix_xsarm_moveit xsarm_moveit.launch.py robot_model:=vx300s hardware_type:=actual
+# ros2 launch interbotix_xsarm_dual_arm xsarm_dual_arm.launch.py

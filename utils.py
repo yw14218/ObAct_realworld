@@ -11,8 +11,8 @@ from sklearn.utils import check_random_state
 
 ik_solver = TracIKSolver(
     "config/vx300s.urdf",
-    base_link_name(),
-    end_effector_name()
+    "vx300s/base_link",
+    "vx300s/ee_gripper_link",
 )
 
 def transform_to_matrix(transform: TransformStamped) -> np.ndarray:

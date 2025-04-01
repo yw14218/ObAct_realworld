@@ -5,7 +5,7 @@ from rclpy.time import Time
 from rcl_interfaces.msg import ParameterDescriptor
 from geometry_msgs.msg import Pose
 from PIL import Image
-from config.config import D405_HANDEYE as T_wristcam_eef, D405_INTRINSIC as K
+from config.config import D405_HANDEYE_LEFT as T_wristcam_eef, D405_INTRINSIC as K
 from utils import pose_inv, euler_from_matrix, quat_from_euler, transform_to_state, solve_transform_3d
 from base_servoer import LightGlueVisualServoer
 from collections import deque
@@ -13,7 +13,6 @@ from interbotix_common_modules.common_robot.robot import robot_shutdown, robot_s
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 import tf2_ros
 import geometry_msgs.msg
-
 
 class VisualServoing(LightGlueVisualServoer, Node):
     def __init__(self, DIR, bot):
@@ -70,78 +69,79 @@ class VisualServoing(LightGlueVisualServoer, Node):
     def run(self):
         """ROS 2 timer callback for the control loop"""            
 
-        # 1. Get new measurement
-        mkpts_scores_0, mkpts_scores_1, depth_cur = self.match_lightglue(filter_seg=False)
-        if mkpts_scores_0 is None or len(mkpts_scores_0) <= 3:
-            self.get_logger().info("Not enough keypoints found, skipping this iteration")
-            return
+        while self.is_complete is False:
+            # 1. Get new measurement
+            mkpts_scores_0, mkpts_scores_1, depth_cur = self.match_lightglue(filter_seg=False)
+            if mkpts_scores_0 is None or len(mkpts_scores_0) <= 3:
+                self.get_logger().info("Not enough keypoints found, skipping this iteration")
+                return
 
-        # Compute transformation
-        T_delta_cam = solve_transform_3d(mkpts_scores_0[:, :2], mkpts_scores_1[:, :2], self.depth_ref, depth_cur, K)
+            # Compute transformation
+            T_delta_cam = solve_transform_3d(mkpts_scores_0[:, :2], mkpts_scores_1[:, :2], self.depth_ref, depth_cur, K)
 
-        # Update error
-        T_delta_cam_inv = np.eye(4) @ pose_inv(T_delta_cam)
-        translation_error = np.linalg.norm(T_delta_cam_inv[:3, 3])
-        rotation_error = np.rad2deg(np.arccos((np.trace(T_delta_cam_inv[:3, :3]) - 1) / 2))
-        self.get_logger().info(f"Translation Error: {translation_error:.6f}, Rotation Error: {rotation_error:.2f} degrees")
-        
-        if translation_error < self.switch_threshold[0] and rotation_error < self.switch_threshold[1]:
-            self.get_logger().info("Global alignment achieved, exiting")
-            self.is_complete = True
+            # Update error
+            T_delta_cam_inv = np.eye(4) @ pose_inv(T_delta_cam)
+            translation_error = np.linalg.norm(T_delta_cam_inv[:3, 3])
+            rotation_error = np.rad2deg(np.arccos((np.trace(T_delta_cam_inv[:3, :3]) - 1) / 2))
+            self.get_logger().info(f"Translation Error: {translation_error:.6f}, Rotation Error: {rotation_error:.2f} degrees")
+            
+            if translation_error < self.switch_threshold[0] and rotation_error < self.switch_threshold[1]:
+                self.get_logger().info("Global alignment achieved, exiting")
+                self.is_complete = True
 
-        # Compute the current state estimate
-        goal_state, current_state = self.compute_goal_state(T_delta_cam)
+            # Compute the current state estimate
+            goal_state, current_state = self.compute_goal_state(T_delta_cam)
 
-        # print(goal_state, current_state)
-        t = geometry_msgs.msg.TransformStamped()
+            # print(goal_state, current_state)
+            t = geometry_msgs.msg.TransformStamped()
 
-        # Set timestamp
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = "vx300s/base_link"  # Parent frame
-        t.child_frame_id = "goal"  # Child frame
+            # Set timestamp
+            t.header.stamp = self.get_clock().now().to_msg()
+            t.header.frame_id = "vx300s/base_link"  # Parent frame
+            t.child_frame_id = "goal"  # Child frame
 
-        # Set translation
-        t.transform.translation.x = goal_state[0]
-        t.transform.translation.y = goal_state[1]
-        t.transform.translation.z = goal_state[2]
+            # Set translation
+            t.transform.translation.x = goal_state[0]
+            t.transform.translation.y = goal_state[1]
+            t.transform.translation.z = goal_state[2]
 
-        # Convert Euler angles to quaternion
-        q = quat_from_euler(goal_state[3:])
+            # Convert Euler angles to quaternion
+            q = quat_from_euler(goal_state[3:])
 
-        # Set rotation
-        t.transform.rotation.x = q[0]
-        t.transform.rotation.y = q[1]
-        t.transform.rotation.z = q[2]
-        t.transform.rotation.w = q[3]
+            # Set rotation
+            t.transform.rotation.x = q[0]
+            t.transform.rotation.y = q[1]
+            t.transform.rotation.z = q[2]
+            t.transform.rotation.w = q[3]
 
-        # Publish transform
-        self.tf_broadcaster.sendTransform(t)
+            # Publish transform
+            self.tf_broadcaster.sendTransform(t)
 
-        control_input = self.compute_control_input(goal_state, current_state)
+            control_input = self.compute_control_input(goal_state, current_state)
 
-        # Get current pose and orientation
-        current_xyz = current_state[:3]
-        current_rpy = current_state[3:6]
+            # Get current pose and orientation
+            current_xyz = current_state[:3]
+            current_rpy = current_state[3:6]
 
-        # Apply control input
-        current_xyz[0] += control_input[0]
-        current_xyz[1] += control_input[1]
-        current_xyz[2] += control_input[2]
-        current_rpy[0] += control_input[3]
+            # Apply control input
+            current_xyz[0] += control_input[0]
+            current_xyz[1] += control_input[1]
+            current_xyz[2] += control_input[2]
+            current_rpy[0] += control_input[3]
 
-        # self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], roll=control_input[4], pitch=control_input[5], yaw=control_input[5])
-        self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], yaw=control_input[5])
+            # self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], roll=control_input[4], pitch=control_input[5], yaw=control_input[5])
+            self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], yaw=control_input[5])
 
-        # self.bot.arm.set_ee_pose_components(*current_xyz, *current_rpy, moving_time=0.1, accel_time=0.1)
+            # self.bot.arm.set_ee_pose_components(*current_xyz, *current_rpy, moving_time=0.1, accel_time=0.1)
 
-        # # Compute IK solution
-        # positions = ik_solver.compute_ik(current_xyz, quat_from_euler(current_rpy))
+            # # Compute IK solution
+            # positions = ik_solver.compute_ik(current_xyz, quat_from_euler(current_rpy))
 
-        # # Send commands if IK is successful
-        # if positions is not None:
-        #     self.bot.arm._publish_commands(positions=positions.position[:6], moving_time=0.05, accel_time=0.01, blocking=False)
+            # # Send commands if IK is successful
+            # if positions is not None:
+            #     self.bot.arm._publish_commands(positions=positions.position[:6], moving_time=0.05, accel_time=0.01, blocking=False)
 
-        self.num_iteration += 1
+            self.num_iteration += 1
 
 
 def main(args=None):
@@ -166,12 +166,10 @@ def main(args=None):
     node = VisualServoing(DIR, bot)
     
     try:
-        while rclpy.ok():
-            node.run()
+        node.run()
     except KeyboardInterrupt:
         pass
     finally:
-        # Clean up
         node.destroy_node()
         rclpy.shutdown()
 

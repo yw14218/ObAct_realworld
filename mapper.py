@@ -104,8 +104,8 @@ class TSDFMapper(Node, abc.ABC):
             scales=[CAMERA_SCALE] * len(self.sampled_poses)
         )
         self.sampled_cameras = sampled_cameras
-        # for camera in sampled_cameras:
-        #     self.vis.add_geometry(camera)
+        for camera in sampled_cameras:
+            self.vis.add_geometry(camera)
 
         self.needs_update = False
         self.is_initialized = False
@@ -144,7 +144,7 @@ class TSDFMapper(Node, abc.ABC):
             transform = self.tf_buffer.lookup_transform(
                 base_link_name(), end_effector_name(),
                 rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=1.0)
+                timeout=rclpy.duration.Duration(seconds=2.0)
             )
             return transform_to_matrix(transform) @ D405_HANDEYE
         except Exception as e:
