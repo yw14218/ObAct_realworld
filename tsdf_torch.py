@@ -5,17 +5,13 @@ import glob
 import cv2
 import time
 import torch
-from config.config import HEIGHT, WIDTH, D405_INTRINSIC
-
+from config.config import HEIGHT, WIDTH, TSDF_SIZE, TSDF_DIM as TSDF_RESOLUTION, NUMBER_OF_VIEW_SAMPLES as NUM_SAMPLED_VIEWS
 # Constants
 DEFAULT_DATA_FOLDER = "tmp"
 DEFAULT_INTRINSIC_FILE = "config/d405_intrinsic_right.npy"
-TSDF_SIZE = 0.45
-TSDF_RESOLUTION = 128
-NUM_SAMPLED_VIEWS = 64
 VOXEL_DOWN_SIZE = 0.005
 CAMERA_SCALE = 0.03
-TOP_N = 1
+TOP_N = 5
 RAY_BATCH_SIZE = int(WIDTH * HEIGHT * 0.2)
 
 # Check for CUDA availability
@@ -97,7 +93,7 @@ class TSDFVolume:
         self.resolution = resolution
         self.voxel_size = self.size / self.resolution
         self.sdf_trunc = sdf_trunc_factor * self.voxel_size
-        self.origin = np.array([0.2, -self.size / 2, -self.size / 2])
+        self.origin = np.array([0.2, -self.size / 2, 0])
 
         print(f"TSDF Origin: {self.origin}, Size: {self.size}, Max Bound: {self.origin + self.size}")
 
@@ -172,7 +168,11 @@ class ViewEvaluator:
         print(f"Initialized ViewEvaluator with TSDF grid shape: {self.sdf_grid.shape}")
         print(f"Target Bounding Box: {self.target_bbox}")
 
+        self.rays_dirs = []  # Store ray directions
+        self.valid_points = []  # Store valid points for visualization
+
     def compute_information_gain(self, pose, width=WIDTH, height=HEIGHT):
+        pose = np.linalg.inv(pose)
         position = torch.tensor(pose[:3, 3], dtype=torch.float32, device=device)
         rotation = torch.tensor(pose[:3, :3], dtype=torch.float32, device=device)
 
@@ -185,7 +185,11 @@ class ViewEvaluator:
         rays_dir = rays_dir / torch.norm(rays_dir, dim=1, keepdim=True)
         rays_dir = torch.matmul(rotation, rays_dir.T).T
 
-        G_x = self.compute_gain_gpu(position, rays_dir)
+        self.rays_dirs.append(rays_dir)
+        G_x, valid_pts = self.compute_gain_gpu(position, rays_dir)  # Get valid points
+
+        # Store valid points for visualization
+        self.valid_points.append(valid_pts.cpu().numpy() if valid_pts is not None else np.array([]))
 
         return G_x.item()
 
@@ -198,47 +202,63 @@ class ViewEvaluator:
         num_rays = rays_dir.shape[0]
         t = torch.arange(0, max_steps * step_size.item(), step_size.item(), device=device)  # [max_steps]
 
-        # Process rays in batches
+        valid_points_list = []  # To store valid 3D points
+
         for start_idx in range(0, num_rays, RAY_BATCH_SIZE):
             end_idx = min(start_idx + RAY_BATCH_SIZE, num_rays)
             batch_rays = rays_dir[start_idx:end_idx]
             batch_size = batch_rays.shape[0]
 
-            # Compute points: [batch_size, max_steps, 3]
+            # Compute points along rays
             points = position.unsqueeze(0).unsqueeze(0) + batch_rays.unsqueeze(1) * t.unsqueeze(0).unsqueeze(2)
-            voxel_idx = ((points - self.origin) / self.voxel_size).to(torch.int32)
+            voxel_idx = torch.clamp(((points - self.origin) / self.voxel_size), 0, self.tsdf.resolution - 1).to(torch.int32)
 
             # Valid voxel indices
             valid_mask = torch.all((voxel_idx >= 0) & (voxel_idx < self.tsdf.resolution), dim=2)
             ray_indices, step_indices = torch.where(valid_mask)
             valid_voxel_idx = voxel_idx[ray_indices, step_indices]
 
-            # Fetch SDF values
-            sdf_values = torch.full_like(points[..., 0], float('nan'), device=device)
-            sdf_values[ray_indices, step_indices] = self.sdf_grid[
-                valid_voxel_idx[:, 0], valid_voxel_idx[:, 1], valid_voxel_idx[:, 2]
-            ]
+            # Fetch SDF values (handle out-of-bounds safely)
+            sdf_values = torch.full((batch_size, max_steps), float('nan'), device=device)
+            if len(valid_voxel_idx) > 0 and valid_voxel_idx.shape[0] == len(ray_indices):
+                sdf_values[ray_indices, step_indices] = self.sdf_grid[
+                    valid_voxel_idx[:, 0], valid_voxel_idx[:, 1], valid_voxel_idx[:, 2]
+                ]
 
-            # Conditions
+            # Check if points are within bounding box
             in_bbox = torch.all(
                 (points >= self.target_bbox[:3]) & (points <= self.target_bbox[3:]),
                 dim=2
             )
-            inside = (sdf_values < 0.5) & ~torch.isnan(sdf_values)
-            surface = (torch.abs(sdf_values - 0.5) < self.voxel_size / (2 * 0.028)) & ~torch.isnan(sdf_values)
 
-            # Vectorized gain computation
+            # Detect surface crossings and inside regions
+            surface = torch.abs(sdf_values - 0.5) < self.voxel_size / 2  # Adjust threshold
+            inside = (sdf_values < 0.5) & ~torch.isnan(sdf_values)
+
+            # Count voxels before first surface
             first_surface = torch.full((batch_size,), max_steps, device=device)
             surface_rays = torch.where(surface.any(dim=1))[0]
             if len(surface_rays) > 0:
                 first_surface[surface_rays] = surface[surface_rays].float().argmax(dim=1)
 
-            # Mask for steps before first surface
             mask = torch.arange(max_steps, device=device).expand(batch_size, -1) < first_surface.unsqueeze(1)
-            valid_inside = inside & in_bbox & mask
-            G_x += valid_inside.sum()
+            valid_inside = inside & in_bbox & mask & ~torch.isnan(sdf_values)
 
-        return G_x
+            # Collect valid points (3D positions where valid_inside is True)
+            valid_points = points[valid_inside].clone()  # Clone to avoid in-place modification
+            if valid_points.numel() > 0:
+                valid_points_list.append(valid_points)
+
+            G_x += valid_inside.sum().float()
+
+        # Concatenate all valid points
+        valid_points_tensor = torch.cat(valid_points_list, dim=0) if valid_points_list else None
+
+        # Normalize gain
+        total_rays = num_rays * max_steps
+        G_x = G_x / total_rays if total_rays > 0 else 0.0
+
+        return G_x, valid_points_tensor
 
 def load_data(folder_path):
     """Load RGB images, depth maps, and poses from folder."""
@@ -277,7 +297,7 @@ def visualize_geometries(geometries, title):
 def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, resolution=TSDF_RESOLUTION,
                               intrinsic_file=DEFAULT_INTRINSIC_FILE, invert_poses=True, debug=True,
                               num_sampled_views=NUM_SAMPLED_VIEWS):
-    # Load data
+    # Load data (unchanged)
     intrinsic = load_intrinsics(intrinsic_file)
     rgb_imgs, depth_imgs, poses = load_data(folder_path)
     
@@ -293,7 +313,7 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     if invert_poses:
         poses = [np.linalg.inv(pose) for pose in poses]
 
-    # Initialize TSDF and integrate frames
+    # Initialize TSDF and integrate frames (unchanged)
     tsdf = TSDFVolume(size, resolution)
     combined_pcd = o3d.geometry.PointCloud()
     debug_dir = "debug_pcds" if debug else None
@@ -312,7 +332,7 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     bbox = np.loadtxt("tmp/bbox.txt")
     bbox = np.concatenate([np.min(bbox, axis=0), np.max(bbox, axis=0)])
 
-    # Sample viewpoints
+    # Sample viewpoints (unchanged)
     sampler = ViewSampler()
     sampler.bbox = bbox
     sampled_views = sampler.generate_hemisphere_points_with_orientations(radius=0.3, num_points=num_sampled_views)
@@ -322,8 +342,7 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
         sampled_poses[i][:3, :3], sampled_poses[i][:3, 3] = view['rotation'], view['position']
     sampled_poses = [np.linalg.inv(pose) for pose in sampled_poses]
 
-    # Compute information gains
-    # bbox = np.concatenate([np.min(combined_pcd.points, axis=0), np.max(combined_pcd.points, axis=0)])
+    # Compute information gains (unchanged)
     evaluator = ViewEvaluator(tsdf, intrinsic, bbox)
     start_time = time.time()
     gains = [evaluator.compute_information_gain(pose) for pose in sampled_poses]
@@ -332,11 +351,12 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     gains = np.array(gains)
     print(f"Gains > 0: {gains[gains > 0].shape[0]} views")
 
-    # Identify top 5 gain views
+    print(gains)
+    # Identify top 5 gain views (unchanged)
     top_gain_indices = np.argsort(gains)[-TOP_N:][::-1]
     print(f"Top {TOP_N} Gain Views: {[(i + 1, gains[i]) for i in top_gain_indices]}")
 
-    # Visualize cameras
+    # Visualize cameras (unchanged)
     original_cameras = create_camera_visualizations(poses, intrinsic_o3d, colors=[[0, 1, 0]] * len(poses))
     
     sampled_colors = [[0, 0, 1]] * len(sampled_poses)
@@ -351,14 +371,53 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     object_bbox_geom = o3d.geometry.AxisAlignedBoundingBox(min_bound=bbox[:3], max_bound=bbox[3:])
     object_bbox_geom.color = (1, 0, 0)
 
-    # Visualize results
+    # Visualize rays for each sampled pose
+    # ray_geometries = []
+    # for i, pose in enumerate(sampled_poses):
+    #     # Get the rays for this pose (last entry in rays_dirs corresponds to this pose)
+    #     pose = np.linalg.inv(pose)
+    #     if i < len(evaluator.rays_dirs):  # Ensure we have rays
+    #         rays_dir = evaluator.rays_dirs[i].cpu().numpy()  # Convert to NumPy
+    #         position = np.array(pose[:3, 3])  # Camera position
+
+    #         # Normalize rays and scale for visualization (e.g., scale by 0.1 to make them visible)
+    #         rays_dir = rays_dir / np.linalg.norm(rays_dir, axis=1, keepdims=True) * 0.1
+
+    #         # Create start points (all at camera position)
+    #         rays_start = np.tile(position, (len(rays_dir), 1))
+
+    #         # Create end points (start + direction)
+    #         rays_end = rays_start + rays_dir
+
+    #         # Create Open3D line set
+    #         points = np.vstack([rays_start, rays_end])
+    #         lines = np.array([[i, i + len(rays_start)] for i in range(len(rays_start))])
+
+    #         ray_lines = o3d.geometry.LineSet()
+    #         ray_lines.points = o3d.utility.Vector3dVector(points)
+    #         ray_lines.lines = o3d.utility.Vector2iVector(lines)
+    #         ray_lines.paint_uniform_color([1, 0, 0])  # Red color for rays
+
+    #         ray_geometries.append(ray_lines)
+
+    # Visualize valid points for each sampled pose
+    valid_point_geometries = []
+    for i in range(len(evaluator.valid_points)):
+        valid_pts = evaluator.valid_points[i]
+        if len(valid_pts) > 0:  # Ensure there are valid points
+            valid_point_cloud = o3d.geometry.PointCloud()
+            valid_point_cloud.points = o3d.utility.Vector3dVector(valid_pts)
+            valid_point_cloud.paint_uniform_color([0, 0, 1])  # Blue for valid points
+            valid_point_geometries.append(valid_point_cloud)
+
+    # Visualize results with valid points
     visualize_geometries(
-        [combined_pcd, bbox_geom, object_bbox_geom] + original_cameras + sampled_cameras,
-        "Visualizing combined point cloud (no TSDF) with camera poses..."
+        [combined_pcd, bbox_geom, object_bbox_geom] + original_cameras + sampled_cameras + valid_point_geometries,
+        "Visualizing combined point cloud (no TSDF) with camera poses and valid points..."
     )
     visualize_geometries(
-        [tsdf.get_point_cloud(), bbox_geom, object_bbox_geom] + original_cameras + sampled_cameras,
-        "Visualizing TSDF point cloud with camera poses..."
+        [tsdf.get_point_cloud(), bbox_geom, object_bbox_geom] + original_cameras + sampled_cameras + valid_point_geometries,
+        "Visualizing TSDF point cloud with camera poses and valid points..."
     )
 
 def main():

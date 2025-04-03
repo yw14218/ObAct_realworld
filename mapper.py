@@ -109,7 +109,7 @@ class TSDFMapper(Node, abc.ABC):
 
         self.needs_update = False
         self.is_initialized = False
-
+        self.has_integrated_inititial_frame = False
         # Subscriptions
         self.rgb_subscriber = self.create_subscription(
             Image, D405_RGB_TOPIC_NAME, self.rgb_image_callback, 10
@@ -231,6 +231,7 @@ class TSDFMapper(Node, abc.ABC):
         self.tsdf._volume.integrate(rgbd, self.intrinsic_o3d, np.linalg.inv(pose))
         self.needs_update = True
         self.log_info("TSDF updated")
+        self.has_integrated_inititial_frame = True
 
     def update_visualization(self):
         if not self.vis.poll_events():
@@ -274,6 +275,10 @@ class TSDFMapper(Node, abc.ABC):
             raise KeyboardInterrupt  # Stop if visualization window is closed
         
     def compute_information_gain_callback(self, request, response):
+        if self.has_integrated_inititial_frame is False:
+            response.success = False
+            response.message = "TSDF has not been initialized yet"
+            return response
         try:
             # Initialize seen_indices if not already present
             if not hasattr(self, 'seen_indices'):
@@ -288,6 +293,7 @@ class TSDFMapper(Node, abc.ABC):
             self.log_info(f"Total gain computation took {computation_time:.2f} seconds")
             
             gains = np.array(gains)
+
             positive_gains = gains[gains > 0]
             self.log_info(f"Gains > 0: {positive_gains.shape[0]} views, "
                         f"Mean: {np.mean(positive_gains):.4f}, "
@@ -323,13 +329,13 @@ class TSDFMapper(Node, abc.ABC):
             quat = rot_mat_to_quat(viewpoint['rotation'])
 
             response.success = True
-            response.message = f"position: {xyz}, orientation: {quat}"
+            response.message = f"position: {xyz}, orientation: {quat}. computed gains: {gains}"
             
         except Exception as e:
             self.log_error(f"Error in compute_information_gain_callback: {e}")
             response.success = False
             response.message = f"Error: {str(e)}"
-        
+            raise RuntimeError(f"Error in compute_information_gain_callback: {e}")
         return response
 
     def destroy_node(self):
