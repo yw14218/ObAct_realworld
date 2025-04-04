@@ -18,7 +18,8 @@ from interbotix_common_modules.common_robot.robot import (
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from config.config import D405_HANDEYE, D405_RGB_TOPIC_NAME
-from utils import transform_to_state, state_to_transform, ik_solver
+from utils import transform_to_state, state_to_transform, ik_solver, matrix_to_xyz_wxyz, xyz_wxyz_to_matrix
+from cartesian_interpolation import interpolate_cartesian_pose, Pose, pose_to_xyz_wxyz, xyz_wxyz_to_pose
 import time
 
 MOVING_TIME_S = 0.5
@@ -104,32 +105,56 @@ def main():
     robot_startup(global_node)
     policy, device = initialize_policy()
     # robot_1.gripper.release()
-    robot_1.arm.go_to_sleep_pose()
-    robot_2.arm.go_to_sleep_pose()
 
-    # for i in range(80):
-    #     state = transform_to_state(encode_transform(robot_1, robot_2))
-    #     state = torch.from_numpy(state).to(device).float()
-    #     cv_img = get_image(global_node, bridge)
-    #     if cv_img is None:
-    #         raise RuntimeError("Failed to get image from camera")
-    #     img = preprocess_image(cv_img)
+    # # goal = [-0.44945639, -0.21322334,  1.04924285,  1.52477694, 0.48320395, -2.26108766]
+    # # joint_look_positions = [0, -0.72, 0.59, 0, 1.02, 0]
+    # # print(robot_1.arm.get_joint_positions())
+    # # robot_1.arm.set_joint_positions(joint_look_positions, moving_time=5, blocking=False)
+    # robot_1.gripper.release()
+    # # time.sleep(2)
 
-    #     observation = {
-    #         "observation.state": state.unsqueeze(0),
-    #         "observation.images.wrist_cam_right": img.unsqueeze(0),
-    #     }
-    #     with torch.inference_mode():
-    #         action = policy.select_action(observation)
-    #     action = action.squeeze(0).to("cpu").numpy()
-    #     action = decode_transform(state_to_transform(action), robot_2)
-    #     robot_1.arm.set_ee_pose_matrix(
-    #         action, custom_guess=robot_1.arm.get_joint_positions(), moving_time=MOVING_TIME_S
-    #     )
+    for i in range(1000):
+        state = transform_to_state(encode_transform(robot_1, robot_2))
+        state = torch.from_numpy(state).to(device).float()
+        cv_img = get_image(global_node, bridge)
+        if cv_img is None:
+            raise RuntimeError("Failed to get image from camera")
+        img = preprocess_image(cv_img)
+
+        observation = {
+            "observation.state": state.unsqueeze(0),
+            "observation.images.wrist_cam_right": img.unsqueeze(0),
+        }
+        with torch.inference_mode():
+            action = policy.select_action(observation)
+        action = action.squeeze(0).to("cpu").numpy()
+        action = decode_transform(state_to_transform(action), robot_2)
+        if i == 0:
+            initial_ee_pose = matrix_to_xyz_wxyz(robot_1.arm.get_ee_pose())
+            goal_ee_pose = matrix_to_xyz_wxyz(action)
+            initial_ee_pose = xyz_wxyz_to_pose(initial_ee_pose)
+            goal_ee_pose = xyz_wxyz_to_pose(goal_ee_pose)
+            # Generate the full trajectory plan
+            waypoints = interpolate_cartesian_pose(
+                initial_ee_pose,
+                goal_ee_pose,
+                max_step=0.01
+            )
+            waypoints = [xyz_wxyz_to_matrix(pose_to_xyz_wxyz(pose)) for pose in waypoints]
+
+            for waypoint in waypoints:
+                robot_1.arm.set_ee_pose_matrix(
+                    waypoint, moving_time=MOVING_TIME_S, custom_guess=robot_1.arm.get_joint_positions(), blocking=True
+                )
+            # input("Press Enter to continue...")
+        else:
+            robot_1.arm.set_ee_pose_matrix(
+                action, custom_guess=robot_1.arm.get_joint_positions(), moving_time=MOVING_TIME_S, blocking=True
+            )
 
     # print("Gripper close initiated")
-    # robot_1.gripper.grasp()
-    # robot_1.arm.set_ee_cartesian_trajectory(z=0.1, moving_time=2)
+    robot_1.gripper.grasp()
+    robot_1.arm.set_ee_cartesian_trajectory(z=0.1, moving_time=2)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,9 @@ from config.config import (
     D405_RGB_TOPIC_NAME, D405_DEPTH_TOPIC_NAME)
 from lightglue import LightGlue, SIFT, SuperPoint
 from lightglue.utils import rbd
+from lightglue import viz2d
+import matplotlib.pyplot as plt
+
 
 def numpy_image_to_torch(image: np.ndarray) -> torch.Tensor:
     """Normalize the image tensor and reorder the dimensions."""
@@ -23,6 +26,7 @@ def numpy_image_to_torch(image: np.ndarray) -> torch.Tensor:
     else:
         raise ValueError(f"Not an image: {image.shape}")
     return torch.tensor(image / 255.0, dtype=torch.float, device="cuda")
+
 
 class CartesianVisualServoer(Node, abc.ABC):
     def __init__(self, use_depth=False, silent=False):
@@ -69,7 +73,7 @@ class CartesianVisualServoer(Node, abc.ABC):
         with self.lock:
             try:
                 # Store the image
-                self.images["rgb"] = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+                self.images["rgb"] = self.bridge.imgmsg_to_cv2(msg, "rgb8")
                 
                 # Mark that we've received a new RGB image
                 self.new_rgb_received = True
@@ -191,6 +195,12 @@ class LightGlueVisualServoer(CartesianVisualServoer):
             mkpts_0 = feats0['keypoints'][matches[..., 0]].cpu().numpy()
             mkpts_1 = feats1['keypoints'][matches[..., 1]].cpu().numpy()
 
+            # axes = viz2d.plot_images([self.rgb_ref, live_rgb])
+            # viz2d.plot_matches(mkpts_0, mkpts_1, color="lime", lw=0.2)
+            
+            # from PIL import Image
+            # Image.fromarray(live_rgb).save("tasks/mug/matches.png")
+            # plt.show()
             if filter_seg:
                 coords = mkpts_0.astype(int)
                 # Boundary check to avoid index errors
@@ -230,11 +240,11 @@ class LightGlueVisualServoer(CartesianVisualServoer):
 if __name__ == "__main__":
     rclpy.init()
     
-    dir = "robot_control/mug"
+    dir = "tasks/mug"
     
     # Load the reference RGB image and segmentation mask
-    rgb_ref = cv2.imread(f"{dir}/demo_wrist_rgb.png")[...,::-1].copy()
-    seg_ref = cv2.imread(f"{dir}/demo_wrist_mask.png", cv2.IMREAD_GRAYSCALE).astype(bool)
+    rgb_ref = cv2.imread(f"{dir}/ref_rgb_masked.png")[...,::-1].copy()
+    seg_ref = cv2.imread(f"{dir}/ref_mask.png", cv2.IMREAD_GRAYSCALE).astype(bool)
     
     # Initialize the visual servoer with reference images
     lgvs = LightGlueVisualServoer(rgb_ref, seg_ref, use_depth=True, silent=False)

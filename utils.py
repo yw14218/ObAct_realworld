@@ -15,6 +15,39 @@ ik_solver = TracIKSolver(
     "vx300s/ee_gripper_link",
 )
 
+def matrix_to_xyz_wxyz(matrix: np.ndarray) -> np.ndarray:
+    """
+    Convert a 4x4 transformation matrix to a 1D array of shape (7,).
+
+    Args:
+        matrix (np.ndarray): A 4x4 transformation matrix.
+
+    Returns:
+        np.ndarray: A 1D array of shape (7,) containing the translation and quaternion.
+    """
+    translation = matrix[:3, 3]
+    rotation = Rotation.from_matrix(matrix[:3, :3])
+    quaternion = rotation.as_quat()
+    return np.concatenate((translation, quaternion))
+
+def xyz_wxyz_to_matrix(xyz_wxyz: np.ndarray) -> np.ndarray:
+    """
+    Convert a 1D array of shape (7,) to a 4x4 transformation matrix.
+
+    Args:
+        xyz_wxyz (np.ndarray): A 1D array of shape (7,) containing the translation and quaternion.
+
+    Returns:
+        np.ndarray: A 4x4 transformation matrix.
+    """
+    translation = xyz_wxyz[:3]
+    quaternion = xyz_wxyz[3:]
+    rotation = Rotation.from_quat(quaternion).as_matrix()
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = translation
+    return matrix
+
 def transform_to_matrix(transform: TransformStamped) -> np.ndarray:
     t = transform.transform.translation
     q = transform.transform.rotation
@@ -34,6 +67,13 @@ def rot_mat_to_quat(rot_mat: np.ndarray) -> np.ndarray:
 
 def compose_homogeneous_matrix(xyz: np.ndarray, quat: np.ndarray) -> np.ndarray:
     rot = Rotation.from_quat(quat).as_matrix()
+    matrix = np.eye(4)
+    matrix[:3, :3] = rot
+    matrix[:3, 3] = xyz
+    return matrix
+
+def compose_homogeneous_matrix_euler(xyz: np.ndarray, euler: np.ndarray) -> np.ndarray:
+    rot = Rotation.from_euler('xyz', euler).as_matrix()
     matrix = np.eye(4)
     matrix[:3, :3] = rot
     matrix[:3, 3] = xyz

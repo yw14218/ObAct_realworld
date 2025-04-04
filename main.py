@@ -7,11 +7,14 @@ from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 import subprocess
 import rclpy
 import signal
-import sys
+import os
 from exploration import Explorer
-from utils import rot_mat_to_quat
-from moveit2 import MoveIt2Viper
 from vs import VisualServoing
+import time
+from cartesian_interpolation import interpolate_cartesian_pose, Pose, pose_to_xyz_wxyz, xyz_wxyz_to_pose
+from utils import matrix_to_xyz_wxyz, xyz_wxyz_to_matrix
+import numpy as np
+from rclpy.executors import MultiThreadedExecutor
 
 MOVING_TIME_S = 3
 
@@ -36,28 +39,7 @@ def go_to_sleep_pose(robot_1, robot_2):
 
 joint_look_positions = [0, -0.72, 0.59, 0, 1.02, 0]
 
-
-def signal_handler():
-    # Terminate subprocesses
-    if process_mapper:
-        process_mapper.terminate()
-        try:
-            process_mapper.wait(timeout=5)  # Wait for the process to terminate
-        except subprocess.TimeoutExpired:
-            process_mapper.kill()  # Force kill if it doesn't terminate
-
-    if process_matcher:
-        process_matcher.terminate()
-        try:
-            process_matcher.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process_matcher.kill()
-
 def main():
-    global global_node, robot_1, robot_2, process_mapper, process_matcher
-
-    # Set up signal handler
-    signal.signal(signal.SIGINT, signal_handler)
 
     # Initialize ROS 2 and nodes
     rclpy.init()
@@ -68,29 +50,61 @@ def main():
     # Move robots to look positions
     robot_1.arm.set_joint_positions(joint_look_positions, moving_time=MOVING_TIME_S, blocking=False)
     robot_2.arm.set_joint_positions(joint_look_positions, moving_time=MOVING_TIME_S, blocking=True)
-
+    
     # Launch subprocesses in new terminals
-    process_mapper = subprocess.Popen(['gnome-terminal', '--', 'python3', 'mapper.py', '--text_prompt', 'green mug'])
-    process_matcher = subprocess.Popen(['gnome-terminal', '--', 'python3', 'matcher.py'])
+    # Launch subprocesses in new terminals with a new process group for later termination
+    process_mapper = subprocess.Popen(['gnome-terminal', '--', 'python3', 'mapper.py', '--text_prompt', 'green mug'], preexec_fn=os.setsid)    
+    process_matcher = subprocess.Popen(['gnome-terminal', '--', 'python3', 'matcher.py'], preexec_fn=os.setsid)
+    vs = VisualServoing("tasks/mug", robot_2)
 
-    # Keep the main script running (ROS 2 spin)
     try:
-        moveit_viper = MoveIt2Viper()
         explorer = Explorer()
-        # while explorer.is_running:
+        # while True:
         for i in range(2):
-            eef_goal = explorer.call_service()
-            plan = moveit_viper.move_to_pose(eef_goal[:3, 3], rot_mat_to_quat(eef_goal[:3, :3]))
-            for point in plan.points:
-                if not explorer.is_running:
-                    break
-                robot_2.arm.set_joint_positions(point.positions[:6], moving_time=1, accel_time=0.3, blocking=True)
-            else:
-                print("No valid viewpoint received.")
+            current_pose = robot_2.arm.get_ee_pose()
 
-        signal_handler()  # Cleanup subprocesses
-        # vs = VisualServoing('tasks/mug', robot_2)
-        # vs.run()
+            eef_goal = None
+            while eef_goal is None:
+                eef_goal = explorer.call_service()
+
+            try:
+                start_xyz_wxyz = matrix_to_xyz_wxyz(current_pose)
+                end_xyz_wxyz = matrix_to_xyz_wxyz(eef_goal)
+                start_pose = xyz_wxyz_to_pose(start_xyz_wxyz)
+                end_pose = xyz_wxyz_to_pose(end_xyz_wxyz)
+                # Generate the full trajectory plan
+                waypoints = interpolate_cartesian_pose(
+                    start_pose,
+                    end_pose,
+                    max_step=0.01
+                )
+                waypoints = [xyz_wxyz_to_matrix(pose_to_xyz_wxyz(pose)) for pose in waypoints]
+
+            except RuntimeError as ex:
+                print(f"Runtime error: {ex}")
+                continue
+
+            for waypoint in waypoints:
+                # if not explorer.is_running:
+                #     break
+                robot_2.arm.set_ee_pose_matrix(waypoint, custom_guess=robot_2.arm.get_joint_positions(), moving_time=1)
+
+        # Terminate subprocesses by killing their process groups
+        if process_mapper:
+            try:
+                os.killpg(process_mapper.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        if process_matcher:
+            try:
+                os.killpg(process_matcher.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+                process_matcher.kill()
+
+
+        vs.run()
 
         rclpy.spin(global_node)
     except KeyboardInterrupt:

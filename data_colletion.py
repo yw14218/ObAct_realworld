@@ -62,7 +62,7 @@ class DataCollector(Node):
         
         # Subscriber for camera pose (arm_2)
         self.camera_pose_sub = self.create_subscription(
-            JointState, '/vx300s/joint_states', self.camera_pose_callback, 10
+            JointState, '/arm_2/joint_states', self.camera_pose_callback, 10
         )
 
     def log_info(self, message):
@@ -153,7 +153,7 @@ class DataCollector(Node):
         self.log_error("ROS context is no longer valid")
         return (None, None, None)
     
-    def save_episode(self, rgb, depth, joints):
+    def get_state_action(self, rgb, depth, joints):
         """Save the collected data to an HDF5 file."""
         cam_images = {"rgb": rgb}
         if self.use_depth:
@@ -161,28 +161,27 @@ class DataCollector(Node):
         
         states = np.array(joints.position)
         ee_pose = ik_solver.fk(states[:6])
-
-        with h5py.File(f"{self.dataset_dir}/{self.folder_name}/episode_{self.episode_cnt}.h5", "w") as f:
-            for key in self.camera_keys:
-                f.create_dataset(f"/observations/images/{key}", data=np.array(cam_images[key]))
-            f.create_dataset("/observations/qpos", data=states)
-            f.create_dataset("/observations/ee_pose", data=ee_pose)
-            if joints.velocity:
-                f.create_dataset("/observations/qvel", data=np.array(joints.velocity))
-            if joints.effort:
-                f.create_dataset("/observations/effort", data=np.array(joints.effort))
-            # Save camera pose (arm_2 joint states) once per episode
-            if self.camera_pose is not None:
-                f.create_dataset("/camera_pose/qpos", data=np.array(self.camera_pose.position))
-                if self.camera_pose.velocity:
-                    f.create_dataset("/camera_pose/qvel", data=np.array(self.camera_pose.velocity))
-                if self.camera_pose.effort:
-                    f.create_dataset("/camera_pose/effort", data=np.array(self.camera_pose.effort))
+        camera_pose = self.camera_pose.position
+        return states, ee_pose, cam_images, camera_pose
+    
+    def save_episode(self):
+        """Save the collected data to an HDF5 file."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with h5py.File(f"{self.dataset_dir}/{self.folder_name}/episode_{timestamp}.h5", "w") as f:
+            f.create_dataset(f"/observations/images/rgbs", data=np.array(self.rgbs))
+            f.create_dataset("/observations/qpos", data=np.array(self.qposes))
+            f.create_dataset("/observations/ee_pose", data=np.array(self.ee_poses))
+            f.create_dataset("/camera_pose/qpos", data=np.array(self.camera_poses))
         
-        self.log_info(f"Saved episode {self.episode_cnt} to HDF5 file.")
-        self.episode_cnt += 1
+        self.log_info(f"Saved episode episode_{timestamp} to HDF5 file.")
+
 
     def run(self):
+        self.rgbs = []
+        self.depths = []
+        self.qposes = []
+        self.camera_poses = []
+        self.ee_poses = []
         """Run the two-stage data collection process."""
         # Stage 1: Wait for user to move the camera
         self.log_info("Stage 1: Please move the camera to the desired position. Type 'ok' when ready.")
@@ -215,8 +214,16 @@ class DataCollector(Node):
             rgb, depth, joints = self.observe(timeout=5.0)
             if rgb is not None and joints is not None:
                 self.log_info(f"Collected data - Joint positions (arm_1): {joints.position}")
-                self.save_episode(rgb, depth, joints)
+                # self.save_episode(rgb, depth, joints)
+                states, ee_pose, cam_images, camera_pose = self.get_state_action(rgb, depth, joints)
+                self.rgbs.append(rgb)
+                self.depths.append(depth)
+                self.qposes.append(states)
+                self.camera_poses.append(camera_pose)
+                self.ee_poses.append(ee_pose)
+
             rclpy.spin_once(self)
+        
 
 def main():
     rclpy.init()
@@ -224,6 +231,7 @@ def main():
     try:
         collector.run()
     except KeyboardInterrupt:
+        collector.save_episode()
         collector.log_info("Data collection stopped by user.")
     finally:
         collector.destroy_node()

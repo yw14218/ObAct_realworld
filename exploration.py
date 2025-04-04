@@ -24,7 +24,7 @@ class Explorer(Node):
         while not self.cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_information_gain service...')
         self.get_logger().info('Connected to /compute_information_gain service')
-        self.error_sub = self.create_subscription(Bool, 'error_exceeds_threshold', self.error_callback, 10)  # Corrected argument order
+        self.error_sub = self.create_subscription(Bool, 'should_exit_exploration', self.error_callback, 10)  # Corrected argument order
         self.is_running = True
 
     def error_callback(self, msg: Bool) -> None:
@@ -32,9 +32,9 @@ class Explorer(Node):
             Callback function for the 'error_exceeds_threshold' topic.
             """
             if msg.data:
-                pass
+                self.is_running = False
             else:
-                self.is_running = True
+                pass
 
     def call_service(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
@@ -52,10 +52,11 @@ class Explorer(Node):
                 return self.parse_viewpoint(response.message)
             else:
                 self.get_logger().error(f'Service call failed: {response.message}')
+                return None
         else:
             self.get_logger().error('Service call failed: No response')
 
-        return None, None
+        return None
 
     @staticmethod
     def parse_viewpoint(message: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:

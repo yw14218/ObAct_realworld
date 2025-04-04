@@ -158,10 +158,10 @@ class Perception(Node):
 
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d.geometry.Image(rgb_image), o3d.geometry.Image(depth_image),
-            depth_scale=1000.0, depth_trunc=3.0, convert_rgb_to_intensity=False
+            depth_scale=1000.0, depth_trunc=0.7, convert_rgb_to_intensity=False
         )
         pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, self.intrinsic)
-        pcd = pcd.voxel_down_sample(voxel_size=0.005).remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)[0]
+        pcd = pcd.voxel_down_sample(voxel_size=0.002).remove_statistical_outlier(nb_neighbors=30, std_ratio=1.5)[0]
         pcd.transform(T_cam_to_robot)
 
         obb = pcd.get_oriented_bounding_box()
