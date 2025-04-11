@@ -29,7 +29,7 @@ def numpy_image_to_torch(image: np.ndarray) -> torch.Tensor:
 
 
 class CartesianVisualServoer(Node, abc.ABC):
-    def __init__(self, use_depth=False, silent=False):
+    def __init__(self, use_depth=False, silent=False, save_video=False, video_file="output.mp4"):
         super().__init__('visual_servoer')
         
         self.bridge = CvBridge()
@@ -55,6 +55,15 @@ class CartesianVisualServoer(Node, abc.ABC):
         if self.use_depth:
             self.depth_subscriber = self.create_subscription(
                 Image, D405_DEPTH_TOPIC_NAME, self.depth_image_callback, 10)
+        
+        # Optional video saving functionality
+        self.save_video = save_video
+        if self.save_video:
+            self.video_file = video_file
+            self.video_writer = None
+            self.video_writer_initialized = False
+            # Create a timer to call save_video_callback at 1 Hz
+            self.create_timer(1.0, self.save_video_callback)
 
     def log_info(self, message):
         """Log info messages only if not in silent mode."""
@@ -145,6 +154,39 @@ class CartesianVisualServoer(Node, abc.ABC):
         self.log_error("ROS context is no longer valid")
         return (None, None)
     
+    def save_video_callback(self):
+        """Callback called at 1Hz to save the current RGB image to an MP4 video."""
+        if not self.save_video:
+            return
+        
+        with self.lock:
+            rgb_frame = self.images["rgb"]
+            if rgb_frame is None:
+                self.log_warn("No RGB frame available for video saving.")
+                return
+            
+            # Initialize VideoWriter on first frame
+            if not self.video_writer_initialized:
+                height, width, _ = rgb_frame.shape
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                self.video_writer = cv2.VideoWriter(self.video_file, fourcc, 1.0, (width, height))
+                self.video_writer_initialized = True
+                self.log_info(f"Video writer initialized: {self.video_file}")
+            
+            # Write the current frame into the video
+            try:
+                self.video_writer.write(rgb_frame)
+                self.log_info("RGB frame written to video.")
+            except Exception as e:
+                self.log_error(f"Error writing frame to video: {e}")
+
+    def destroy_node(self):
+        """Override destroy_node to release video writer if necessary."""
+        if self.save_video and self.video_writer is not None:
+            self.video_writer.release()
+            self.log_info("Video writer released.")
+        super().destroy_node()
+
     def run(self):
         """Run the visual servoing loop."""
         pass
@@ -160,7 +202,7 @@ class LightGlueVisualServoer(CartesianVisualServoer):
             self.feats0_sift = self.extractor_sift.extract(numpy_image_to_torch(rgb_ref))
         elif features == 'superpoint':
             self.extractor_sp = SuperPoint(max_num_keypoints=1024).eval().cuda()
-            self.matcher_sp = LightGlue(features='superpoint', depth_confidence=-1, width_confidence=-1).eval().cuda() 
+            self.matcher_sp = LightGlue(features='superpoint', depth_confidence=-1, width_confidence=-1, filter_threshold=0.1).eval().cuda() 
             self.feats0_sp = self.extractor_sp.extract(numpy_image_to_torch(rgb_ref))
         else:
             raise NotImplementedError
@@ -192,12 +234,15 @@ class LightGlueVisualServoer(CartesianVisualServoer):
                 self.log_warn("No matches found between reference and current frame.")
                 return None, None, None
             
+            kpts_0 = feats0['keypoints'].cpu().numpy()
+            kpts_1 = feats1['keypoints'].cpu().numpy()
             mkpts_0 = feats0['keypoints'][matches[..., 0]].cpu().numpy()
             mkpts_1 = feats1['keypoints'][matches[..., 1]].cpu().numpy()
 
             # axes = viz2d.plot_images([self.rgb_ref, live_rgb])
             # viz2d.plot_matches(mkpts_0, mkpts_1, color="lime", lw=0.2)
             
+            # viz2d.plot_keypoints([kpts_0, kpts_1], colors="blue")
             # from PIL import Image
             # Image.fromarray(live_rgb).save("tasks/mug/matches.png")
             # plt.show()
@@ -210,7 +255,7 @@ class LightGlueVisualServoer(CartesianVisualServoer):
                 if not np.any(valid_coords):
                     self.log_warn("No valid coordinates found within segmentation mask bounds.")
                     return None, None, None
-                    
+                
                 coords = coords[valid_coords]
                 mask = np.zeros(matches.shape[0], dtype=bool)
                 mask[valid_coords] = self.seg_ref[coords[:, 1], coords[:, 0]].astype(bool)
@@ -230,13 +275,13 @@ class LightGlueVisualServoer(CartesianVisualServoer):
             mkpts_scores_1 = np.concatenate((mkpts_1, scores), axis=1)
             
             self.log_info(f"Matched {len(mkpts_scores_0)} keypoints after filtering.")
+
             return mkpts_scores_0, mkpts_scores_1, live_depth
             
         except Exception as e:
             self.log_error(f"Error in match_lightglue: {e}")
             return None, None, None
-
-
+        
 if __name__ == "__main__":
     rclpy.init()
     

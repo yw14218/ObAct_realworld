@@ -21,10 +21,13 @@ class VisualServoing(LightGlueVisualServoer, Node):
         # Initialize the robot
         self.bot = bot
 
+        rgb_img = np.array(Image.open(f"{DIR}/ref_rgb.png"))
+        mask_img = np.array(Image.open(f"{DIR}/ref_mask.png")).astype(bool)
+        masked_rgb = rgb_img * mask_img[..., None]
         # Initialize the base servoer
         LightGlueVisualServoer.__init__(
             self,
-            rgb_ref=np.array(Image.open(f"{DIR}/ref_rgb_masked.png")),
+            rgb_ref=masked_rgb,
             seg_ref=np.array(Image.open(f"{DIR}/ref_mask.png")).astype(bool),
             use_depth=True,
             features='superpoint',
@@ -101,6 +104,7 @@ class VisualServoing(LightGlueVisualServoer, Node):
             if T_delta_cam is None:
                 self.get_logger().info("Failed to compute transformation, skipping this iteration")
                 continue
+
             # Update error
             T_delta_cam_inv = np.eye(4) @ pose_inv(T_delta_cam)
             translation_error = np.linalg.norm(T_delta_cam_inv[:3, 3])
@@ -122,19 +126,8 @@ class VisualServoing(LightGlueVisualServoer, Node):
 
             control_input = self.compute_control_input(goal_state, current_state)
 
-            # Get current pose and orientation
-            current_xyz = current_state[:3]
-            current_rpy = current_state[3:6]
-
-            # Apply control input
-            current_xyz[0] += control_input[0]
-            current_xyz[1] += control_input[1]
-            current_xyz[2] += control_input[2]
-            current_rpy[0] += control_input[3]
-
-            self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], roll=control_input[3], pitch=control_input[4], yaw=control_input[5])
-            # self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], yaw=control_input[5])
-
+            self.bot.arm.set_ee_cartesian_trajectory(x=control_input[0], y=control_input[1], z=control_input[2], pitch=control_input[4], yaw=control_input[5])
+            
             self.num_iteration += 1
 
 

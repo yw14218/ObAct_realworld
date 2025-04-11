@@ -27,7 +27,7 @@ class Perception(Node):
         self,
         output_dir: str,
         text_prompt: str,
-        radius: float = 0.3,
+        radius: float = 0.25,
         base_frame: str = base_link_name(),
         end_effector_frame: str = end_effector_name(),
         ik_solver=None
@@ -161,7 +161,7 @@ class Perception(Node):
             depth_scale=1000.0, depth_trunc=0.7, convert_rgb_to_intensity=False
         )
         pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, self.intrinsic)
-        pcd = pcd.voxel_down_sample(voxel_size=0.002).remove_statistical_outlier(nb_neighbors=30, std_ratio=1.5)[0]
+        pcd = pcd.voxel_down_sample(voxel_size=0.001).remove_statistical_outlier(nb_neighbors=30, std_ratio=1)[0]
         pcd.transform(T_cam_to_robot)
 
         obb = pcd.get_oriented_bounding_box()

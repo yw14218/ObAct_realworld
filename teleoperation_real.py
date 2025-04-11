@@ -94,7 +94,6 @@ def move_arm(bot, goal_pos, goal_rot, gripper_status):
         bot.gripper.release()
         GRIPPER_CLOSED = False
 
-
 def main():
     bot_1 = InterbotixManipulatorXS(
         robot_model='vx300s',
@@ -113,10 +112,15 @@ def main():
     # # start a udp server
     udp_server = UDPServer(ip="127.0.0.1", port=8006)
     udp_server.start()
+    # bot_1.gripper.release()
 
+    # input("Press Enter to grasp...")
+    bot_1.gripper.release()
+    # bot_1.gripper.set_pressure(1)
     bot_1.arm.set_joint_positions([0, -0.72, 0.59, 0, 1.02, 0], moving_time=2, accel_time=0.3)
 
     bot_1.arm.moving_time=0.2
+
 
     # Filter for smoothing the gripper commands
     filter = OneEuroFilter(min_cutoff=0.01, beta=10.0)

@@ -12,7 +12,7 @@ from exploration import Explorer
 from vs import VisualServoing
 import time
 from cartesian_interpolation import interpolate_cartesian_pose, Pose, pose_to_xyz_wxyz, xyz_wxyz_to_pose
-from utils import matrix_to_xyz_wxyz, xyz_wxyz_to_matrix
+from utils import matrix_to_xyz_wxyz, xyz_wxyz_to_matrix, ik_solver
 import numpy as np
 from rclpy.executors import MultiThreadedExecutor
 
@@ -60,7 +60,7 @@ def main():
     try:
         explorer = Explorer()
         # while True:
-        for i in range(2):
+        while explorer.is_running:
             current_pose = robot_2.arm.get_ee_pose()
 
             eef_goal = None
@@ -85,9 +85,16 @@ def main():
                 continue
 
             for waypoint in waypoints:
-                # if not explorer.is_running:
-                #     break
-                robot_2.arm.set_ee_pose_matrix(waypoint, custom_guess=robot_2.arm.get_joint_positions(), moving_time=1)
+                if not explorer.is_running:
+                    break
+                # robot_2.arm.set_ee_pose_matrix(waypoint, custom_guess=robot_2.arm.get_joint_positions(), moving_time=1)
+                qpos = ik_solver.ik(waypoint, qinit=robot_2.arm.get_joint_positions())
+                if qpos is not None:
+                    robot_2.arm.set_joint_positions(qpos, moving_time=1)
+                else:
+                    print("No IK solution found for waypoint")
+                    continue
+
 
         # Terminate subprocesses by killing their process groups
         if process_mapper:

@@ -82,7 +82,7 @@ class ViewSampler:
         )
     
         # filter out too low points
-        sampling_data = sampling_data[sampling_data['position'][:, 2] > 0.1]
+        sampling_data = sampling_data[sampling_data['position'][:, 2] > 0.15]
         print(f"Generated {len(sampling_data)} viewpoints")
 
         return sampling_data
@@ -172,7 +172,7 @@ class ViewEvaluator:
         
     def compute_information_gain(self, pose, width=WIDTH, height=HEIGHT):
 
-        # pose = np.linalg.inv(pose)
+        pose = np.linalg.inv(pose)
         position = torch.tensor(pose[:3, 3], dtype=torch.float32, device=device)
         rotation = torch.tensor(pose[:3, :3], dtype=torch.float32, device=device)
 
@@ -250,9 +250,9 @@ class ViewEvaluator:
 
 def load_data(folder_path):
     """Load RGB images, depth maps, and poses from folder."""
-    rgb_files = sorted(glob.glob(os.path.join(folder_path, "rgb_*.png")))
-    depth_files = sorted(glob.glob(os.path.join(folder_path, "depth_*.npy")))
-    pose_files = sorted(glob.glob(os.path.join(folder_path, "pose_*.npy")))
+    rgb_files = sorted(glob.glob(os.path.join(folder_path, "rgb_*1or2.png")))
+    depth_files = sorted(glob.glob(os.path.join(folder_path, "depth_*1or2.npy")))
+    pose_files = sorted(glob.glob(os.path.join(folder_path, "pose_*1or2.npy")))
     
     return [cv2.imread(f) for f in rgb_files], [np.load(f) for f in depth_files], [np.load(f) for f in pose_files]
 

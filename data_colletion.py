@@ -12,6 +12,7 @@ import numpy as np
 import os
 from datetime import datetime
 from utils import ik_solver
+import cv2
 
 class DataCollector(Node):
     def __init__(self, use_depth=False, silent=False, dataset_dir="datasets"):
@@ -166,14 +167,21 @@ class DataCollector(Node):
     
     def save_episode(self):
         """Save the collected data to an HDF5 file."""
+        if not all([self.rgbs, self.qposes, self.ee_poses, self.camera_poses]):
+            self.log_warn("Some data lists are empty. Skipping save.")
+            return
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with h5py.File(f"{self.dataset_dir}/{self.folder_name}/episode_{timestamp}.h5", "w") as f:
-            f.create_dataset(f"/observations/images/rgbs", data=np.array(self.rgbs))
-            f.create_dataset("/observations/qpos", data=np.array(self.qposes))
-            f.create_dataset("/observations/ee_pose", data=np.array(self.ee_poses))
-            f.create_dataset("/camera_pose/qpos", data=np.array(self.camera_poses))
-        
-        self.log_info(f"Saved episode episode_{timestamp} to HDF5 file.")
+        try:
+            with h5py.File(f"{self.dataset_dir}/{self.folder_name}/episode_{timestamp}.h5", "w") as f:
+                f.create_dataset(f"/observations/images/rgbs", data=np.array(self.rgbs, dtype=np.uint8))
+                f.create_dataset(f"/observations/images/depths", data=np.array(self.depths, dtype=np.float32))
+                f.create_dataset("/observations/qpos", data=np.array(self.qposes))
+                f.create_dataset("/observations/ee_pose", data=np.array(self.ee_poses))
+                f.create_dataset("/camera_pose/qpos", data=np.array(self.camera_poses))
+            self.log_info(f"Saved episode episode_{timestamp} to HDF5 file.")
+        except Exception as e:
+            self.log_error(f"Failed to save episode to HDF5: {e}")
 
 
     def run(self):
@@ -216,12 +224,13 @@ class DataCollector(Node):
                 self.log_info(f"Collected data - Joint positions (arm_1): {joints.position}")
                 # self.save_episode(rgb, depth, joints)
                 states, ee_pose, cam_images, camera_pose = self.get_state_action(rgb, depth, joints)
-                self.rgbs.append(rgb)
-                self.depths.append(depth)
-                self.qposes.append(states)
-                self.camera_poses.append(camera_pose)
-                self.ee_poses.append(ee_pose)
-
+                with self.lock:  # Add lock here
+                    self.rgbs.append(rgb)        
+                    if self.use_depth:
+                        self.depths.append(depth)
+                    self.qposes.append(states)
+                    self.camera_poses.append(camera_pose)
+                    self.ee_poses.append(ee_pose)
             rclpy.spin_once(self)
         
 
@@ -231,11 +240,15 @@ def main():
     try:
         collector.run()
     except KeyboardInterrupt:
-        collector.save_episode()
+        try:
+            collector.save_episode()
+        except Exception as e:
+            collector.log_error(f"Failed to save episode during shutdown: {e}")
         collector.log_info("Data collection stopped by user.")
     finally:
         collector.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():  # Only shutdown if not already shut down
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
