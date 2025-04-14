@@ -12,9 +12,11 @@ from exploration import Explorer
 from vs import VisualServoing
 import time
 from cartesian_interpolation import interpolate_cartesian_pose, Pose, pose_to_xyz_wxyz, xyz_wxyz_to_pose
-from utils import matrix_to_xyz_wxyz, xyz_wxyz_to_matrix, ik_solver
+from utils import matrix_to_xyz_wxyz, xyz_wxyz_to_matrix, ik_solver, rot_mat_to_quat
 import numpy as np
 from rclpy.executors import MultiThreadedExecutor
+from moveit2 import MoveIt2Viper
+
 
 MOVING_TIME_S = 3
 
@@ -54,46 +56,58 @@ def main():
     # Launch subprocesses in new terminals
     # Launch subprocesses in new terminals with a new process group for later termination
     process_mapper = subprocess.Popen(['gnome-terminal', '--', 'python3', 'mapper.py', '--text_prompt', 'green mug'], preexec_fn=os.setsid)    
-    process_matcher = subprocess.Popen(['gnome-terminal', '--', 'python3', 'matcher.py'], preexec_fn=os.setsid)
+    # process_matcher = subprocess.Popen(['gnome-terminal', '--', 'python3', 'matcher.py'], preexec_fn=os.setsid)
     vs = VisualServoing("tasks/mug", robot_2)
+
+    moveit2viper = MoveIt2Viper()
 
     try:
         explorer = Explorer()
         # while True:
-        while explorer.is_running:
+        # while explorer.is_running:
+        for i in range(3):
             current_pose = robot_2.arm.get_ee_pose()
 
             eef_goal = None
             while eef_goal is None:
                 eef_goal = explorer.call_service()
+                time.sleep(0.1)
 
-            try:
-                start_xyz_wxyz = matrix_to_xyz_wxyz(current_pose)
-                end_xyz_wxyz = matrix_to_xyz_wxyz(eef_goal)
-                start_pose = xyz_wxyz_to_pose(start_xyz_wxyz)
-                end_pose = xyz_wxyz_to_pose(end_xyz_wxyz)
-                # Generate the full trajectory plan
-                waypoints = interpolate_cartesian_pose(
-                    start_pose,
-                    end_pose,
-                    max_step=0.01
-                )
-                waypoints = [xyz_wxyz_to_matrix(pose_to_xyz_wxyz(pose)) for pose in waypoints]
+            input("Press Enter to continue...")
 
-            except RuntimeError as ex:
-                print(f"Runtime error: {ex}")
-                continue
+            moveit2viper.move_to_pose(
+                position=eef_goal[:3, 3],
+                quat_xyzw=rot_mat_to_quat(eef_goal[:3, :3])
+            )
+            moveit2viper.moveit2.wait_until_executed()
+            
+            # try:
+            #     start_xyz_wxyz = matrix_to_xyz_wxyz(current_pose)
+            #     end_xyz_wxyz = matrix_to_xyz_wxyz(eef_goal)
+            #     start_pose = xyz_wxyz_to_pose(start_xyz_wxyz)
+            #     end_pose = xyz_wxyz_to_pose(end_xyz_wxyz)
+            #     # Generate the full trajectory plan
+            #     waypoints = interpolate_cartesian_pose(
+            #         start_pose,
+            #         end_pose,
+            #         max_step=0.01
+            #     )
+            #     waypoints = [xyz_wxyz_to_matrix(pose_to_xyz_wxyz(pose)) for pose in waypoints]
 
-            for waypoint in waypoints:
-                if not explorer.is_running:
-                    break
-                # robot_2.arm.set_ee_pose_matrix(waypoint, custom_guess=robot_2.arm.get_joint_positions(), moving_time=1)
-                qpos = ik_solver.ik(waypoint, qinit=robot_2.arm.get_joint_positions())
-                if qpos is not None:
-                    robot_2.arm.set_joint_positions(qpos, moving_time=1)
-                else:
-                    print("No IK solution found for waypoint")
-                    continue
+            # except RuntimeError as ex:
+            #     print(f"Runtime error: {ex}")
+            #     continue
+
+            # for waypoint in waypoints:
+            #     if not explorer.is_running:
+            #         break
+            #     # robot_2.arm.set_ee_pose_matrix(waypoint, custom_guess=robot_2.arm.get_joint_positions(), moving_time=1)
+            #     qpos = ik_solver.ik(waypoint, qinit=robot_2.arm.get_joint_positions())
+            #     if qpos is not None:
+            #         robot_2.arm.set_joint_positions(qpos, moving_time=1)
+            #     else:
+            #         print("No IK solution found for waypoint")
+            #         continue
 
 
         # Terminate subprocesses by killing their process groups
@@ -103,15 +117,15 @@ def main():
             except ProcessLookupError:
                 pass
 
-        if process_matcher:
-            try:
-                os.killpg(process_matcher.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-                process_matcher.kill()
+        # if process_matcher:
+        #     try:
+        #         os.killpg(process_matcher.pid, signal.SIGTERM)
+        #     except ProcessLookupError:
+        #         pass
+        #         process_matcher.kill()
 
 
-        vs.run()
+        # vs.run()
 
         rclpy.spin(global_node)
     except KeyboardInterrupt:
